@@ -1,0 +1,89 @@
+@startuml
+title Idempotent Background Transaction Processing
+left to right direction
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam ArrowColor #52627A
+skinparam ComponentBorderColor #52627A
+skinparam ComponentBackgroundColor #F4F7FB
+skinparam PackageBorderColor #8292A8
+skinparam PackageBackgroundColor #FFFFFF
+
+actor "Client / Browser" as Client
+
+package "Spring Boot Application" {
+  component "Static UI\nindex.html" as UI
+  component "REST API\nTransactionController" as API
+  component "Actuator health\n/actuator/health" as Health
+  component "TransactionProcessor\nvalidation, idempotency,\nordering and retries" as Processor
+  component "Fixed thread pool\n2 workers" as Executor
+}
+
+database "In-memory state\ntransactions and requests\nsequence slots and cursors\naccount / currency balances" as State
+component "SLF4J event logs" as Logs
+
+Client --> UI : open console
+Client --> API : HTTP requests
+Client --> Health : GET health
+UI --> API : fetch API
+API --> Processor : submit, retry, query
+Processor --> Executor : schedule account processing
+Executor --> Processor : process expected sequence
+Processor --> State : synchronized state changes
+Processor --> Logs : lifecycle events
+
+note right of Processor
+  Per account, sequence starts at 1.
+  Future events wait for missing sequences.
+  Duplicate business transactions have no
+  second balance effect.
+  Transient failures retry up to 3 times
+  per processing run.
+end note
+
+note bottom of State
+  Demo-only volatile storage.
+  Restart loses all state.
+end note
+@enduml
+
+@startuml
+title Transaction Processing Flow
+autonumber
+actor Client
+participant "TransactionController" as API
+participant "TransactionProcessor" as Processor
+participant "Fixed thread pool" as Worker
+database "In-memory state" as State
+
+Client -> API : POST transaction or batch record
+API -> Processor : submit request
+Processor -> Processor : validate fields
+
+alt invalid request
+  Processor --> API : validation error for this record
+else duplicate request or transaction
+  Processor -> State : inspect idempotency maps
+  Processor --> API : existing result or DUPLICATE
+else valid new transaction
+  Processor -> State : reserve transaction and sequence
+  alt future account sequence
+    Processor --> API : WAITING_FOR_SEQUENCE
+  else expected account sequence
+    Processor -> Worker : schedule account processing
+    Processor --> API : accepted
+    Worker -> Processor : process expected sequence
+    loop up to 3 attempts per run
+      Processor -> Processor : simulate processing attempt
+    end
+    alt transient attempts exhausted
+      Processor -> State : set FAILED, do not update balance
+    else processing succeeds
+      Processor -> State : update balance and PROCESSED status
+      Processor -> Processor : drain next available sequence
+    end
+  end
+end
+@enduml

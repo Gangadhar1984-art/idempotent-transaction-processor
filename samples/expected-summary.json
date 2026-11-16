@@ -1,0 +1,21 @@
+{
+  "totalRequests": 5,
+  "countsByStatus": {
+    "RECEIVED": 0,
+    "PROCESSING": 0,
+    "PROCESSED": 4,
+    "DUPLICATE": 1,
+    "WAITING_FOR_SEQUENCE": 0,
+    "RETRY_PENDING": 0,
+    "FAILED": 0
+  },
+  "accountBalances": {
+    "ACC-201": {
+      "USD": 85
+    },
+    "ACC-203": {
+      "USD": 500
+    }
+  },
+  "maxAttemptsPerRun": 3
+}

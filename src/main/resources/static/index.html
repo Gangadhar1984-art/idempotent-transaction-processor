@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Transaction Processing Console</title>
+    <style>
+        :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172033; background: #f3f6fb; }
+        body { max-width: 1100px; margin: 32px auto; padding: 0 20px; }
+        h1 { margin-bottom: 4px; }
+        .muted { color: #58657a; }
+        .card { background: white; border: 1px solid #dfe5ef; border-radius: 10px; padding: 18px; margin: 18px 0; }
+        textarea { box-sizing: border-box; width: 100%; min-height: 210px; font: 13px ui-monospace, monospace; padding: 12px; }
+        button { border: 0; border-radius: 6px; padding: 9px 14px; margin: 4px 8px 4px 0; cursor: pointer; background: #2457d6; color: white; }
+        button.secondary { background: #e7ecf5; color: #172033; }
+        .stats { display: flex; gap: 12px; flex-wrap: wrap; }
+        .stat { background: #f3f6fb; border-radius: 7px; padding: 10px 14px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th, td { padding: 9px; text-align: left; border-bottom: 1px solid #e6eaf1; }
+        th { color: #58657a; }
+        pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .status { font-weight: 650; }
+    </style>
+</head>
+<body>
+<h1>Transaction Processing Console</h1>
+<div class="muted">In-memory demo · submit out-of-order transactions, inspect retries, and view account balances.</div>
+<section class="card">
+    <h2>Submit a batch</h2>
+    <p class="muted">A batch isolates invalid records. Sequence numbers start at 1 per account.</p>
+    <textarea id="batch" spellcheck="false"></textarea>
+    <button id="submit">Submit batch</button>
+    <button class="secondary" id="sample">Load sample batch</button>
+    <pre id="result" aria-live="polite"></pre>
+</section>
+<section class="card">
+    <h2>Operations</h2>
+    <div id="summary" class="stats"></div>
+    <button class="secondary" id="refresh">Refresh</button>
+    <h3>Transaction requests</h3>
+    <div style="overflow-x:auto">
+        <table>
+            <thead><tr><th>Transaction</th><th>Account</th><th>Sequence</th><th>Status</th><th>Attempts</th><th>Message / action</th></tr></thead>
+            <tbody id="records"></tbody>
+        </table>
+    </div>
+</section>
+<script>
+    const sample = [
+        {transactionId:"TXN-2002",requestId:"REQ-2",sequenceNumber:2,accountId:"ACC-201",transactionType:"DEBIT",amount:40,currency:"USD"},
+        {transactionId:"TXN-2001",requestId:"REQ-1",sequenceNumber:1,accountId:"ACC-201",transactionType:"CREDIT",amount:100,currency:"USD"},
+        {transactionId:"TXN-2002",requestId:"REQ-2-DUP",sequenceNumber:2,accountId:"ACC-201",transactionType:"DEBIT",amount:40,currency:"USD"},
+        {transactionId:"TXN-2003",requestId:"REQ-3",sequenceNumber:3,accountId:"ACC-201",transactionType:"CREDIT",amount:25,currency:"USD"},
+        {transactionId:"TXN-2004",requestId:"REQ-4",sequenceNumber:1,accountId:"ACC-202",transactionType:"DEBIT",amount:-10,currency:"USD"},
+        {transactionId:"TXN-2005",requestId:"REQ-5",sequenceNumber:1,accountId:"ACC-203",transactionType:"CREDIT",amount:500,currency:"USD",simulatedFailures:1}
+    ];
+
+    async function refresh() {
+        const [summaryResponse, recordsResponse] = await Promise.all([
+            fetch("/api/summary"), fetch("/api/transactions")
+        ]);
+        if (!summaryResponse.ok || !recordsResponse.ok) throw new Error("Could not load service state");
+        const summary = await summaryResponse.json();
+        const records = await recordsResponse.json();
+        document.querySelector("#summary").innerHTML =
+            `<div class="stat"><strong>${summary.totalRequests}</strong> requests</div>` +
+            Object.entries(summary.countsByStatus).map(([status, count]) =>
+                `<div class="stat"><strong>${count}</strong> ${status}</div>`).join("") +
+            Object.entries(summary.accountBalances).flatMap(([account, currencies]) =>
+                Object.entries(currencies).map(([currency, balance]) =>
+                    `<div class="stat"><strong>${escapeHtml(account)} (${escapeHtml(currency)})</strong> balance ${balance}</div>`))
+                .join("");
+        document.querySelector("#records").innerHTML = records.map(record => {
+            const request = record.request;
+            const retry = record.status === "FAILED"
+                ? ` <button class="secondary" data-retry="${encodeURIComponent(request.transactionId)}">Retry</button>` : "";
+            return `<tr><td>${escapeHtml(request.transactionId)}</td><td>${escapeHtml(request.accountId)}</td>` +
+                `<td>${request.sequenceNumber}</td><td class="status">${record.status}</td><td>${record.attempts}</td>` +
+                `<td>${escapeHtml(record.message)}${retry}</td></tr>`;
+        }).join("");
+        document.querySelectorAll("[data-retry]").forEach(button => button.addEventListener("click", async () => {
+            const response = await fetch(`/api/transactions/${button.dataset.retry}/retry`, {method:"POST"});
+            document.querySelector("#result").textContent = await response.text();
+            await refresh();
+        }));
+    }
+
+    function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, character =>
+            ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[character]));
+    }
+
+    document.querySelector("#sample").addEventListener("click", () => {
+        document.querySelector("#batch").value = JSON.stringify(sample, null, 2);
+    });
+    document.querySelector("#submit").addEventListener("click", async () => {
+        const result = document.querySelector("#result");
+        try {
+            const response = await fetch("/api/transactions/batch", {
+                method:"POST", headers:{"Content-Type":"application/json"},
+                body:document.querySelector("#batch").value
+            });
+            result.textContent = JSON.stringify(await response.json(), null, 2);
+            await refresh();
+        } catch (error) {
+            result.textContent = error.message;
+        }
+    });
+    document.querySelector("#refresh").addEventListener("click", () => refresh().catch(error => {
+        document.querySelector("#result").textContent = error.message;
+    }));
+    document.querySelector("#sample").click();
+    refresh().catch(error => { document.querySelector("#result").textContent = error.message; });
+</script>
+</body>
+</html>
